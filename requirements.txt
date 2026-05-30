@@ -1,3 +1,4 @@
-sanic>=23.12.1
+fastapi
+uvicorn
 google-genai>=2.7.0
 httpx>=0.28.1
