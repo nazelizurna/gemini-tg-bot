@@ -10,6 +10,7 @@ from google.genai import types
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from apscheduler.schedulers.background import BackgroundScheduler
+from duckduckgo_search import DDGS  # <-- Free Search Library
 
 # --- TARGET CALENDAR ROUTING ---
 USER_CALENDAR_EMAIL = "nazzzzeli@gmail.com" 
@@ -18,7 +19,6 @@ USER_CALENDAR_EMAIL = "nazzzzeli@gmail.com"
 DB_FILE = "bot_memory.db"
 
 def init_db():
-    """Initializes the SQLite tables for storing chat context logs."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
@@ -57,7 +57,6 @@ def get_recent_history(chat_id: int, limit=15):
 scheduler = BackgroundScheduler()
 
 async def send_async_telegram_reminder(chat_id: int, task_text: str):
-    """Fired by scheduler clock to send an alert directly to the user."""
     token = os.environ.get("TELEGRAM_TOKEN")
     alert_msg = f"⏰ **REMINDER:** {task_text}"
     async with httpx.AsyncClient() as client:
@@ -67,7 +66,6 @@ async def send_async_telegram_reminder(chat_id: int, task_text: str):
         )
 
 def trigger_reminder_job(chat_id: int, task_text: str):
-    """Bridge sync worker for APScheduler thread execution safety."""
     import asyncio
     asyncio.run(send_async_telegram_reminder(chat_id, task_text))
 
@@ -86,11 +84,10 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SERVICE_ACCOUNT_INFO = json.loads(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"))
 
-# Initialize the official Gemini Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 
-# --- GOOGLE CALENDAR TOOLS ---
+# --- AUTOMATION TOOLS ---
 
 def get_calendar_service():
     scopes = ['https://www.googleapis.com/auth/calendar']
@@ -98,14 +95,7 @@ def get_calendar_service():
     return build('calendar', 'v3', credentials=creds)
 
 def create_calendar_event(summary: str, start_time: str, end_time: str) -> str:
-    """
-    Creates a new event or meeting on the user's primary Google Calendar.
-    
-    Args:
-        summary: The title, name, or description of the event.
-        start_time: ISO 8601 formatted start string (e.g., '2026-06-01T10:00:00-03:00').
-        end_time: ISO 8601 formatted end string (e.g., '2026-06-01T11:00:00-03:00').
-    """
+    """Creates a new event or meeting on the user's primary Google Calendar."""
     try:
         service = get_calendar_service()
         event = {
@@ -119,13 +109,7 @@ def create_calendar_event(summary: str, start_time: str, end_time: str) -> str:
         return f"ERROR: Failed to write event: {str(e)}"
 
 def list_calendar_events(time_min: str, time_max: str) -> str:
-    """
-    Retrieves a list of scheduled events from Google Calendar between two strict ISO 8601 timestamps.
-    
-    Args:
-        time_min: Start window formatted as ISO 8601 string (e.g., '2026-05-31T00:00:00Z').
-        time_max: End window formatted as ISO 8601 string (e.g., '2026-05-31T23:59:59Z').
-    """
+    """Retrieves a list of scheduled events from Google Calendar between two strict ISO 8601 timestamps."""
     try:
         service = get_calendar_service()
         events_result = service.events().list(
@@ -150,14 +134,7 @@ def list_calendar_events(time_min: str, time_max: str) -> str:
         return f"ERROR: Failed to read schedule: {str(e)}"
 
 def set_proactive_reminder(chat_id: int, task: str, delay_minutes: int) -> str:
-    """
-    Schedules an alarm or reminder alert that pings the user after a relative time delay in minutes.
-    
-    Args:
-        chat_id: The specific chat room routing id.
-        task: What the user wants to be reminded of.
-        delay_minutes: The integer count of minutes to wait before triggering the alarm.
-    """
+    """Schedules an alarm or reminder alert that pings the user after a relative time delay in minutes."""
     try:
         run_time = datetime.now() + timedelta(minutes=int(delay_minutes))
         scheduler.add_job(
@@ -170,12 +147,30 @@ def set_proactive_reminder(chat_id: int, task: str, delay_minutes: int) -> str:
     except Exception as e:
         return f"ERROR: Scheduler initialization failed: {str(e)}"
 
+# --- NEW FREE SEARCH TOOL ---
+def search_the_live_web(query: str) -> str:
+    """
+    Searches the live internet for up-to-date real-time information, weather, news, code documentation, or general facts.
+    
+    Args:
+        query: The direct search engine search query string.
+    """
+    try:
+        # Use DuckDuckGo to pull top 3 clean snippet summaries
+        with DDGS() as ddgs:
+            results = [r for r in ddgs.text(query, max_results=3)]
+            if not results:
+                return "No real-time search results found for that query."
+            
+            snippets = []
+            for r in results:
+                snippets.append(f"Source: {r['title']}\nSnippet: {r['body']}\nLink: {r['href']}\n---")
+            return "\n".join(snippets)
+    except Exception as e:
+        return f"ERROR: Live web lookup dropped due to error: {str(e)}"
+
 
 # --- WEBHOOK INTERCEPTOR ---
-
-@app.get("/")
-def home():
-    return {"status": "Complete Gemini Agent is active!"}
 
 @app.post("/webhook")
 async def handle_webhook(request: Request):
@@ -188,41 +183,35 @@ async def handle_webhook(request: Request):
             if user_text.startswith("/"):
                 return {"status": "ignored"}
 
-            # Save to SQLite local memory
             save_message(chat_id=chat_id, role="user", content=user_text)
-            
-            # Fetch contextual history thread
             past_history = get_recent_history(chat_id=chat_id, limit=10)
             
-            # Parse localized server time strings to anchoring contexts
             now_local = datetime.now()
             current_time_str = now_local.strftime("%A, %B %d, %Y %I:%M %p")
             iso_now = now_local.isoformat()
             
             system_instruction = (
-                f"You are a highly intelligent personal assistant. The user's exact current local time is: {current_time_str}.\n"
+                f"You are a highly intelligent personal assistant. The user's current local time is: {current_time_str}.\n"
                 f"The current ISO 8601 reference timestamp is: {iso_now}.\n"
                 f"Your active Telegram chat_id is: {chat_id}.\n\n"
                 "CRITICAL OPERATION MATRIX:\n"
-                "1. If asked about scheduled events, checking availability, or plans for ANY day/date (including today, tomorrow, or any specific date in 2026), you MUST invoke `list_calendar_events`.\n"
-                "2. When generating boundaries for `list_calendar_events`, calculate strict ISO strings matching the user's current calendar year and day profiles.\n"
-                "3. If asked to remind the user about an activity relative to right now, call `set_proactive_reminder` using the active chat_id integer.\n"
-                "4. Always present returned verification output parameters as conversational message updates."
+                "1. If asked about scheduled events or calendar checks, you MUST call `list_calendar_events`.\n"
+                "2. If asked to be reminded about an activity relative to right now, call `set_proactive_reminder`.\n"
+                "3. If the user asks for real-time data, live sports scores, news updates, weather, trending topics, or questions you don't know the answer to, you MUST call `search_the_live_web`.\n"
+                "4. Always present returned validation output parameters as clean conversational message updates to the user."
             )
 
-            # Reconstruct thread history components
             formatted_contents = []
             for msg in past_history:
                 formatted_contents.append(
                     types.Content(role=msg["role"], parts=[types.Part.from_text(text=msg["text"])])
                 )
             
-            # Fire structural orchestration engine
             chat = ai_client.chats.create(
                 model="gemini-2.5-flash",
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    tools=[create_calendar_event, list_calendar_events, set_proactive_reminder],
+                    tools=[create_calendar_event, list_calendar_events, set_proactive_reminder, search_the_live_web],
                 ),
                 history=formatted_contents[:-1]
             )
@@ -233,10 +222,8 @@ async def handle_webhook(request: Request):
             if not bot_reply:
                 bot_reply = "Request processed successfully."
 
-            # Commit model reaction down to local session memory
             save_message(chat_id=chat_id, role="model", content=bot_reply)
 
-            # Route back out to Telegram client UI
             async with httpx.AsyncClient() as client:
                 await client.post(
                     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
