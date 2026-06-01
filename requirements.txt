@@ -5,3 +5,4 @@ httpx>=0.28.1
 google-api-python-client
 google-auth
 apscheduler
+duckduckgo_search
