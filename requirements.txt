@@ -1,8 +1,10 @@
 fastapi
-uvicorn
-google-genai>=2.7.0
-httpx>=0.28.1
-google-api-python-client
+uvicorn[standard]
+httpx
+google-genai
 google-auth
+google-auth-httplib2
+google-api-python-client
 apscheduler
-duckduckgo_search
+duckduckgo-search
+python-dotenv
